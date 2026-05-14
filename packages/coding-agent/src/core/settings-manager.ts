@@ -68,6 +68,7 @@ export type PackageSource =
 	| string
 	| {
 			source: string;
+			subpath?: string;
 			extensions?: string[];
 			skills?: string[];
 			prompts?: string[];

@@ -16,7 +16,48 @@ export type GitSource = {
 	ref?: string;
 	/** True if ref was specified (package won't be auto-updated) */
 	pinned: boolean;
+	/** Subdirectory within the repo to use as the package root */
+	subpath?: string;
 };
+
+/**
+ * Extract and remove a `#` fragment from a git URL.
+ * Fragments containing '/' are treated as subpaths (subdirectory within the repo).
+ * Fragments without '/' are returned as refs (committish) so the caller can
+ * pass them to hosted-git-info.
+ */
+function splitFragment(url: string): { url: string; subpath?: string; fragmentRef?: string } {
+	// For protocol URLs, use URL parsing
+	if (url.includes("://")) {
+		try {
+			const parsed = new URL(url);
+			const fragment = parsed.hash.slice(1); // Remove leading '#'
+			if (fragment) {
+				parsed.hash = "";
+				const cleanUrl = parsed.toString().replace(/\/$/, "");
+				if (fragment.includes("/")) {
+					return { url: cleanUrl, subpath: fragment };
+				}
+				return { url: cleanUrl, fragmentRef: fragment };
+			}
+		} catch {
+			// Not a valid URL, fall through
+		}
+	}
+
+	// For shorthand and scp-like URLs, find the last '#'
+	const hashIndex = url.lastIndexOf("#");
+	if (hashIndex < 0) return { url };
+	const fragment = url.slice(hashIndex + 1);
+	if (!fragment) return { url: url.slice(0, hashIndex) };
+
+	const cleanUrl = url.slice(0, hashIndex);
+	if (fragment.includes("/")) {
+		return { url: cleanUrl, subpath: fragment };
+	}
+	// Single-word fragment like `#v1.0.0` — treat as committish
+	return { url: cleanUrl, fragmentRef: fragment };
+}
 
 function splitRef(url: string): { repo: string; ref?: string } {
 	const scpLikeMatch = url.match(/^git@([^:]+):(.+)$/);
@@ -134,21 +175,26 @@ function parseGenericGitUrl(url: string): GitSource | null {
 export function parseGitUrl(source: string): GitSource | null {
 	const trimmed = source.trim();
 	const hasGitPrefix = trimmed.startsWith("git:");
-	const url = hasGitPrefix ? trimmed.slice(4).trim() : trimmed;
+	const urlWithFragment = hasGitPrefix ? trimmed.slice(4).trim() : trimmed;
 
-	if (!hasGitPrefix && !/^(https?|ssh|git):\/\//i.test(url)) {
+	if (!hasGitPrefix && !/^(https?|ssh|git):\/\//i.test(urlWithFragment)) {
 		return null;
 	}
 
-	const split = splitRef(url);
+	// Extract subpath fragment (#path/to/subdir) before parsing ref
+	const { url, subpath, fragmentRef } = splitFragment(urlWithFragment);
 
-	const hostedCandidates = [split.ref ? `${split.repo}#${split.ref}` : undefined, url].filter(
+	const split = splitRef(url);
+	// Use @ref first, then #fragment ref
+	const effectiveRef = split.ref ?? fragmentRef;
+
+	const hostedCandidates = [effectiveRef ? `${split.repo}#${effectiveRef}` : undefined, url].filter(
 		(value): value is string => Boolean(value),
 	);
 	for (const candidate of hostedCandidates) {
 		const info = hostedGitInfo.fromUrl(candidate);
 		if (info) {
-			if (split.ref && info.project?.includes("@")) {
+			if (effectiveRef && info.project?.includes("@")) {
 				continue;
 			}
 			const useHttpsPrefix =
@@ -162,19 +208,21 @@ export function parseGitUrl(source: string): GitSource | null {
 				repo: useHttpsPrefix ? `https://${split.repo}` : split.repo,
 				host: info.domain || "",
 				path: `${info.user}/${info.project}`.replace(/\.git$/, ""),
-				ref: info.committish || split.ref || undefined,
-				pinned: Boolean(info.committish || split.ref),
+				ref: info.committish || effectiveRef || undefined,
+				pinned: Boolean(info.committish || effectiveRef),
+				subpath,
 			};
 		}
 	}
 
-	const httpsCandidates = [split.ref ? `https://${split.repo}#${split.ref}` : undefined, `https://${url}`].filter(
-		(value): value is string => Boolean(value),
-	);
+	const httpsCandidates = [
+		effectiveRef ? `https://${split.repo}#${effectiveRef}` : undefined,
+		`https://${url}`,
+	].filter((value): value is string => Boolean(value));
 	for (const candidate of httpsCandidates) {
 		const info = hostedGitInfo.fromUrl(candidate);
 		if (info) {
-			if (split.ref && info.project?.includes("@")) {
+			if (effectiveRef && info.project?.includes("@")) {
 				continue;
 			}
 			return {
@@ -182,11 +230,16 @@ export function parseGitUrl(source: string): GitSource | null {
 				repo: `https://${split.repo}`,
 				host: info.domain || "",
 				path: `${info.user}/${info.project}`.replace(/\.git$/, ""),
-				ref: info.committish || split.ref || undefined,
-				pinned: Boolean(info.committish || split.ref),
+				ref: info.committish || effectiveRef || undefined,
+				pinned: Boolean(info.committish || effectiveRef),
+				subpath,
 			};
 		}
 	}
 
-	return parseGenericGitUrl(url);
+	const result = parseGenericGitUrl(url);
+	if (result) {
+		return { ...result, subpath };
+	}
+	return null;
 }

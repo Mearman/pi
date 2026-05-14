@@ -816,8 +816,10 @@ export class DefaultPackageManager implements PackageManager {
 			return existsSync(path) ? path : undefined;
 		}
 		if (parsed.type === "git") {
-			const path = this.getGitInstallPath(parsed, scope);
-			return existsSync(path) ? path : undefined;
+			const cloneDir = this.getGitInstallPath(parsed, scope);
+			if (!existsSync(cloneDir)) return undefined;
+			const packageRoot = this.getGitPackageRoot(parsed, scope);
+			return existsSync(packageRoot) ? packageRoot : undefined;
 		}
 		if (parsed.type === "local") {
 			const baseDir = this.getBaseDirForScope(scope);
@@ -1172,9 +1174,12 @@ export class DefaultPackageManager implements PackageManager {
 				if (!hasUpdate) {
 					return undefined;
 				}
+				const displayName = parsed.subpath
+					? `${parsed.host}/${parsed.path}#${parsed.subpath}`
+					: `${parsed.host}/${parsed.path}`;
 				return {
 					source,
-					displayName: `${parsed.host}/${parsed.path}`,
+					displayName,
 					type: "git",
 					scope: entry.scope,
 				};
@@ -1232,15 +1237,25 @@ export class DefaultPackageManager implements PackageManager {
 			}
 
 			if (parsed.type === "git") {
-				const installedPath = this.getGitInstallPath(parsed, scope);
-				if (!existsSync(installedPath)) {
+				const cloneDir = this.getGitInstallPath(parsed, scope);
+				if (!existsSync(cloneDir)) {
 					const installed = await installMissing();
 					if (!installed) continue;
 				} else if (scope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
 					await this.refreshTemporaryGitSource(parsed, sourceStr);
 				}
-				metadata.baseDir = installedPath;
-				this.collectPackageResources(installedPath, accumulator, filter, metadata);
+				// Use subpath from URL fragment or settings object form
+				const settingsSubpath = typeof pkg === "object" ? pkg.subpath : undefined;
+				const effectiveSubpath = settingsSubpath ?? parsed.subpath;
+				const packageRoot = effectiveSubpath ? join(cloneDir, effectiveSubpath) : cloneDir;
+				if (effectiveSubpath && !existsSync(packageRoot)) {
+					throw new Error(
+						`Subpath "${effectiveSubpath}" not found in ${parsed.host}/${parsed.path}. ` +
+							`The repository was cloned successfully but the subdirectory does not exist.`,
+					);
+				}
+				metadata.baseDir = packageRoot;
+				this.collectPackageResources(packageRoot, accumulator, filter, metadata);
 			}
 		}
 	}
@@ -1607,7 +1622,9 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		if (parsed.type === "git") {
 			// Use host/path for identity to normalize SSH and HTTPS
-			return `git:${parsed.host}/${parsed.path}`;
+			// Include subpath so different subpaths from the same repo are distinct packages
+			const base = `git:${parsed.host}/${parsed.path}`;
+			return parsed.subpath ? `${base}#${parsed.subpath}` : base;
 		}
 		if (scope) {
 			const baseDir = this.getBaseDirForScope(scope);
@@ -1721,58 +1738,60 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
-		const targetDir = this.getGitInstallPath(source, scope);
-		if (existsSync(targetDir)) {
+		const cloneDir = this.getGitInstallPath(source, scope);
+		if (existsSync(cloneDir)) {
 			return;
 		}
 		const gitRoot = this.getGitInstallRoot(scope);
 		if (gitRoot) {
 			this.ensureGitIgnore(gitRoot);
 		}
-		mkdirSync(dirname(targetDir), { recursive: true });
+		mkdirSync(dirname(cloneDir), { recursive: true });
 
-		await this.runCommand("git", ["clone", source.repo, targetDir]);
+		await this.runCommand("git", ["clone", source.repo, cloneDir]);
 		if (source.ref) {
-			await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+			await this.runCommand("git", ["checkout", source.ref], { cwd: cloneDir });
 		}
-		const packageJsonPath = join(targetDir, "package.json");
+		const packageRoot = this.getGitPackageRoot(source, scope);
+		const packageJsonPath = join(packageRoot, "package.json");
 		if (existsSync(packageJsonPath)) {
-			await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+			await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: packageRoot });
 		}
 	}
 
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
-		const targetDir = this.getGitInstallPath(source, scope);
-		if (!existsSync(targetDir)) {
+		const cloneDir = this.getGitInstallPath(source, scope);
+		if (!existsSync(cloneDir)) {
 			await this.installGit(source, scope);
 			return;
 		}
 
-		const target = await this.getLocalGitUpdateTarget(targetDir);
+		const target = await this.getLocalGitUpdateTarget(cloneDir);
 
 		// Fetch only the ref we will reset to, avoiding unrelated branch/tag noise.
-		await this.runCommand("git", target.fetchArgs, { cwd: targetDir });
+		await this.runCommand("git", target.fetchArgs, { cwd: cloneDir });
 
 		const localHead = await this.runCommandCapture("git", ["rev-parse", "HEAD"], {
-			cwd: targetDir,
+			cwd: cloneDir,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		const refreshedTargetHead = await this.runCommandCapture("git", ["rev-parse", target.ref], {
-			cwd: targetDir,
+			cwd: cloneDir,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		if (localHead.trim() === refreshedTargetHead.trim()) {
 			return;
 		}
 
-		await this.runCommand("git", ["reset", "--hard", target.ref], { cwd: targetDir });
+		await this.runCommand("git", ["reset", "--hard", target.ref], { cwd: cloneDir });
 
 		// Clean untracked files (extensions should be pristine)
-		await this.runCommand("git", ["clean", "-fdx"], { cwd: targetDir });
+		await this.runCommand("git", ["clean", "-fdx"], { cwd: cloneDir });
 
-		const packageJsonPath = join(targetDir, "package.json");
+		const packageRoot = this.getGitPackageRoot(source, scope);
+		const packageJsonPath = join(packageRoot, "package.json");
 		if (existsSync(packageJsonPath)) {
-			await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+			await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: packageRoot });
 		}
 	}
 
@@ -1926,6 +1945,19 @@ export class DefaultPackageManager implements PackageManager {
 			return join(this.cwd, CONFIG_DIR_NAME, "git");
 		}
 		return join(this.agentDir, "git");
+	}
+
+	/**
+	 * Get the package root for a git source. If a subpath is specified,
+	 * returns the subpath within the clone directory. Otherwise returns
+	 * the clone directory itself.
+	 */
+	private getGitPackageRoot(source: GitSource, scope: SourceScope): string {
+		const cloneDir = this.getGitInstallPath(source, scope);
+		if (source.subpath) {
+			return join(cloneDir, source.subpath);
+		}
+		return cloneDir;
 	}
 
 	private getTemporaryDir(prefix: string, suffix?: string): string {
