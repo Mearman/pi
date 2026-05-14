@@ -1175,6 +1175,204 @@ Content`,
 		});
 	});
 
+	describe("git subpath support", () => {
+		it("should parse subpath from URL fragment", async () => {
+			const parsed = (packageManager as any).parseSource("git:github.com/user/repo#packages/my-extension");
+			expect(parsed.type).toBe("git");
+			expect(parsed.host).toBe("github.com");
+			expect(parsed.path).toBe("user/repo");
+			expect(parsed.subpath).toBe("packages/my-extension");
+			expect(parsed.pinned).toBe(false);
+		});
+
+		it("should parse subpath with ref", async () => {
+			const parsed = (packageManager as any).parseSource("git:github.com/user/repo@v1#packages/ext");
+			expect(parsed.type).toBe("git");
+			expect(parsed.ref).toBe("v1");
+			expect(parsed.subpath).toBe("packages/ext");
+			expect(parsed.pinned).toBe(true);
+		});
+
+		it("should parse subpath from HTTPS URL", async () => {
+			const parsed = (packageManager as any).parseSource(
+				"https://github.com/user/mono#packages/coding-agent/examples/extensions/subagent",
+			);
+			expect(parsed.type).toBe("git");
+			expect(parsed.subpath).toBe("packages/coding-agent/examples/extensions/subagent");
+		});
+
+		it("should not extract subpath when fragment has no slashes", async () => {
+			const parsed = (packageManager as any).parseSource("git:github.com/user/repo#v1.0.0");
+			expect(parsed.type).toBe("git");
+			expect(parsed.subpath).toBeUndefined();
+			expect(parsed.ref).toBe("v1.0.0");
+		});
+
+		it("should produce distinct identities for different subpaths in same repo", async () => {
+			const id1 = (packageManager as any).getPackageIdentity("git:github.com/user/mono#packages/ext-a");
+			const id2 = (packageManager as any).getPackageIdentity("git:github.com/user/mono#packages/ext-b");
+			const id3 = (packageManager as any).getPackageIdentity("git:github.com/user/mono");
+
+			expect(id1).not.toBe(id2);
+			expect(id1).not.toBe(id3);
+			expect(id2).not.toBe(id3);
+		});
+
+		it("should dedupe identical subpath sources", async () => {
+			const id1 = (packageManager as any).getPackageIdentity("git:github.com/user/mono#packages/ext");
+			const id2 = (packageManager as any).getPackageIdentity("https://github.com/user/mono#packages/ext");
+
+			expect(id1).toBe(id2);
+		});
+
+		it("should install git package with subpath and run npm install in subpath dir", async () => {
+			const source = "git:github.com/user/mono#packages/my-extension";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			const subpathDir = join(cloneDir, "packages", "my-extension");
+
+			const runCommandSpy = vi
+				.spyOn(packageManager as any, "runCommand")
+				.mockImplementation(async (...callArgs: unknown[]) => {
+					const [command, args] = callArgs as [string, string[]];
+					if (command === "git" && args[0] === "clone") {
+						mkdirSync(cloneDir, { recursive: true });
+						mkdirSync(subpathDir, { recursive: true });
+						writeFileSync(
+							join(subpathDir, "package.json"),
+							JSON.stringify({ name: "my-extension", version: "1.0.0" }),
+						);
+					}
+				});
+
+			await packageManager.install(source);
+
+			// npm install should run in the subpath dir, not the clone root
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], {
+				cwd: subpathDir,
+			});
+			// npm install should NOT have been called in the clone root
+			const npmCalls = (runCommandSpy as any).mock.calls.filter(
+				(call: [string, string[], { cwd?: string }]) => call[0] === "npm" && call[2]?.cwd === cloneDir,
+			);
+			expect(npmCalls).toHaveLength(0);
+		});
+
+		it("should resolve resources from subpath directory", async () => {
+			const source = "git:github.com/user/mono#packages/my-extension";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			const subpathDir = join(cloneDir, "packages", "my-extension");
+			mkdirSync(join(subpathDir, "extensions"), { recursive: true });
+			writeFileSync(join(subpathDir, "extensions", "ext.ts"), "export default function() {}");
+
+			settingsManager.setPackages([source]);
+
+			const result = await packageManager.resolve();
+			const ext = result.extensions.find((r) => r.path.endsWith("ext.ts"));
+			expect(ext).toBeDefined();
+			expect(ext?.enabled).toBe(true);
+			expect(ext?.metadata.origin).toBe("package");
+		});
+
+		it("should resolve resources from subpath with pi manifest", async () => {
+			const source = "git:github.com/user/mono#packages/my-extension";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			const subpathDir = join(cloneDir, "packages", "my-extension");
+			mkdirSync(subpathDir, { recursive: true });
+			writeFileSync(
+				join(subpathDir, "package.json"),
+				JSON.stringify({
+					name: "my-extension",
+					pi: { extensions: ["./ext-dir"] },
+				}),
+			);
+			mkdirSync(join(subpathDir, "ext-dir"), { recursive: true });
+			writeFileSync(join(subpathDir, "ext-dir", "main.ts"), "export default function() {}");
+
+			settingsManager.setPackages([source]);
+
+			const result = await packageManager.resolve();
+			const ext = result.extensions.find((r) => r.path.endsWith("main.ts"));
+			expect(ext).toBeDefined();
+			expect(ext?.enabled).toBe(true);
+		});
+
+		it("should use settings subpath when object form is used", async () => {
+			const source = "git:github.com/user/mono";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			const subpathDir = join(cloneDir, "packages", "ext-b");
+			mkdirSync(join(subpathDir, "extensions"), { recursive: true });
+			writeFileSync(join(subpathDir, "extensions", "ext.ts"), "export default function() {}");
+
+			settingsManager.setPackages([{ source, subpath: "packages/ext-b" } as any]);
+
+			const result = await packageManager.resolve();
+			const ext = result.extensions.find((r) => r.path.endsWith("ext.ts"));
+			expect(ext).toBeDefined();
+			expect(ext?.enabled).toBe(true);
+		});
+
+		it("should throw when subpath does not exist in cloned repo", async () => {
+			const source = "git:github.com/user/mono#packages/nonexistent";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			mkdirSync(cloneDir, { recursive: true });
+
+			settingsManager.setPackages([source]);
+
+			await expect(packageManager.resolve()).rejects.toThrow('Subpath "packages/nonexistent" not found');
+		});
+
+		it("should update git package and run npm install in subpath dir", async () => {
+			const source = "git:github.com/user/mono#packages/ext";
+			const cloneDir = join(tempDir, ".pi", "git", "github.com", "user", "mono");
+			const subpathDir = join(cloneDir, "packages", "ext");
+			mkdirSync(cloneDir, { recursive: true });
+			mkdirSync(subpathDir, { recursive: true });
+			writeFileSync(join(subpathDir, "package.json"), JSON.stringify({ name: "ext", version: "1.0.0" }));
+			settingsManager.setProjectPackages([source]);
+
+			vi.spyOn(packageManager as any, "runCommandCapture").mockImplementation(async (...callArgs: unknown[]) => {
+				const [_command, args] = callArgs as [string, string[]];
+				if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "@{upstream}") {
+					return "origin/main";
+				}
+				if (args[0] === "rev-parse" && args[1] === "@{upstream}") {
+					return "remote-head";
+				}
+				if (args[0] === "rev-parse" && args[1] === "HEAD") {
+					return "local-head";
+				}
+				throw new Error(`Unexpected runCommandCapture args: ${args.join(" ")}`);
+			});
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.update(source);
+
+			// npm install should run in the subpath dir, not the clone root
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], {
+				cwd: subpathDir,
+			});
+		});
+
+		it("should return subpath dir from getInstalledPath", async () => {
+			const source = "git:github.com/user/mono#packages/ext";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			const subpathDir = join(cloneDir, "packages", "ext");
+			mkdirSync(subpathDir, { recursive: true });
+
+			const installedPath = packageManager.getInstalledPath(source, "user");
+			expect(installedPath).toBe(subpathDir);
+		});
+
+		it("should return undefined from getInstalledPath when subpath does not exist", async () => {
+			const source = "git:github.com/user/mono#packages/nonexistent";
+			const cloneDir = join(agentDir, "git", "github.com", "user", "mono");
+			mkdirSync(cloneDir, { recursive: true });
+
+			const installedPath = packageManager.getInstalledPath(source, "user");
+			expect(installedPath).toBeUndefined();
+		});
+	});
+
 	describe("pattern filtering in top-level arrays", () => {
 		it("should exclude extensions with ! pattern", async () => {
 			const extDir = join(agentDir, "extensions");
