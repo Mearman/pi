@@ -30,6 +30,28 @@ describe("Git URL Parsing", () => {
 				repo: "https://github.com/user/repo",
 			});
 		});
+
+		it("should parse HTTPS URL with subpath fragment", () => {
+			const result = parseGitUrl("https://github.com/user/repo#packages/coding-agent/examples/extensions/subagent");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				repo: "https://github.com/user/repo",
+				subpath: "packages/coding-agent/examples/extensions/subagent",
+			});
+		});
+
+		it("should parse HTTPS URL with ref and subpath", () => {
+			const result = parseGitUrl("https://github.com/user/repo@v1#packages/extension");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				ref: "v1",
+				repo: "https://github.com/user/repo",
+				subpath: "packages/extension",
+				pinned: true,
+			});
+		});
 	});
 
 	describe("shorthand URLs (accepted only with git: prefix)", () => {
@@ -58,6 +80,78 @@ describe("Git URL Parsing", () => {
 				path: "user/repo",
 				ref: "v1.0.0",
 				repo: "git@github.com:user/repo",
+			});
+		});
+
+		it("should parse host/path shorthand with subpath", () => {
+			const result = parseGitUrl("git:github.com/user/repo#packages/extension");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				repo: "https://github.com/user/repo",
+				subpath: "packages/extension",
+			});
+		});
+
+		it("should parse shorthand with ref and subpath", () => {
+			const result = parseGitUrl("git:github.com/user/repo@v1#packages/extension");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				ref: "v1",
+				repo: "https://github.com/user/repo",
+				subpath: "packages/extension",
+				pinned: true,
+			});
+		});
+
+		it("should parse git@host:path with subpath", () => {
+			const result = parseGitUrl("git:git@github.com:user/repo#packages/extension");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				repo: "git@github.com:user/repo",
+				subpath: "packages/extension",
+			});
+		});
+	});
+
+	describe("subpath edge cases", () => {
+		it("should not extract subpath when fragment has no slashes (looks like a ref)", () => {
+			const result = parseGitUrl("git:github.com/user/repo#v1.0.0");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				repo: "https://github.com/user/repo",
+				ref: "v1.0.0",
+				pinned: true,
+			});
+			expect(result?.subpath).toBeUndefined();
+		});
+
+		it("should not extract subpath when fragment is empty", () => {
+			const result = parseGitUrl("git:github.com/user/repo#");
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "user/repo",
+				repo: "https://github.com/user/repo",
+			});
+			expect(result?.subpath).toBeUndefined();
+		});
+
+		it("should not set subpath when no fragment present", () => {
+			const result = parseGitUrl("git:github.com/user/repo");
+			expect(result?.subpath).toBeUndefined();
+		});
+
+		it("should handle deeply nested subpath", () => {
+			const result = parseGitUrl(
+				"https://github.com/earendil-works/pi-mono#packages/coding-agent/examples/extensions/subagent",
+			);
+			expect(result).toMatchObject({
+				host: "github.com",
+				path: "earendil-works/pi-mono",
+				subpath: "packages/coding-agent/examples/extensions/subagent",
 			});
 		});
 	});
