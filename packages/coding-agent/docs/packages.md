@@ -89,6 +89,36 @@ ssh://git@github.com/user/repo@v1
 - Cloned to `~/.pi/agent/git/<host>/<path>` (global) or `.pi/git/<host>/<path>` (project).
 - Runs `npm install` after clone or pull if `package.json` exists.
 
+**Subpath support:**
+
+Append `#path/to/subdir` to install from a subdirectory of a monorepo. The entire repository is cloned, but pi resolves the package root from the specified subdirectory. This is useful for installing individual extensions from monorepos.
+
+```bash
+# Install from a subdirectory of a monorepo
+pi install git:github.com/earendil-works/pi-mono#packages/coding-agent/examples/extensions/subagent
+
+# With a version ref
+pi install git:github.com/user/monorepo@v2#packages/my-extension
+
+# Protocol URL with subpath
+pi install https://github.com/user/monorepo#packages/extension
+```
+
+Subpaths can also be specified in `settings.json` using the object form:
+
+```json
+{
+  "packages": [
+    {
+      "source": "git:github.com/user/monorepo@v1",
+      "subpath": "packages/my-extension"
+    }
+  ]
+}
+```
+
+When multiple packages share the same repository but use different subpaths, each is tracked as a separate package. The shared clone is updated once by `pi update`.
+
 **SSH examples:**
 ```bash
 # git@host:path shorthand (requires git: prefix)
