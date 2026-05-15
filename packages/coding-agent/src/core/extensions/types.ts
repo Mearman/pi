@@ -104,6 +104,23 @@ export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
 }
 
+/** Widget item with optional click handler. */
+export interface WidgetItem {
+	/** Display text for the widget item. */
+	readonly text: string;
+	onSelect?: () => void;
+}
+
+/** Keybinding action for the select() dialog. */
+export interface SelectAction {
+	/** Keybinding ID (e.g. "ctrl+x" or "meta+x"). */
+	readonly key: string;
+	/** Human-readable label (e.g. "Kill"). */
+	readonly label: string;
+	/** Callback invoked when the key is pressed. */
+	onTrigger: () => void;
+}
+
 /** Raw terminal input listener for extensions. */
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
@@ -125,7 +142,7 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+	select(title: string, options: string[], actions?: SelectAction[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
@@ -161,8 +178,8 @@ export interface ExtensionUIContext {
 	/** Set the label shown for hidden thinking blocks. Call with no argument to restore default. */
 	setHiddenThinkingLabel(label?: string): void;
 
-	/** Set a widget to display above or below the editor. Accepts string array or component factory. */
-	setWidget(key: string, content: string[] | undefined, options?: ExtensionWidgetOptions): void;
+	/** Set a widget to display above or below the editor. Accepts string array, component factory, or widget items with callbacks. */
+	setWidget(key: string, content: WidgetItem[] | string[] | undefined, options?: ExtensionWidgetOptions): void;
 	setWidget(
 		key: string,
 		content: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined,
