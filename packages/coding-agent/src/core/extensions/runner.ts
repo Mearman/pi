@@ -241,6 +241,8 @@ export class ExtensionRunner {
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private bashProcessRef: BashProcessRef = { current: undefined };
+	/** Current agent loop handle (set by AgentSession on agent_start). */
+	public agentLoopHandle: import("../extensions/types.js").AgentLoopHandle | undefined;
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -645,6 +647,10 @@ export class ExtensionRunner {
 			getBashProcess: () => {
 				runner.assertActive();
 				return runner.bashProcessRef.current;
+			},
+			getAgentLoop: () => {
+				runner.assertActive();
+				return runner.agentLoopHandle;
 			},
 		};
 	}

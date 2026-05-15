@@ -19,6 +19,7 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		compact,
 		getSystemPrompt: () => "",
 		getBashProcess: () => undefined,
+		getAgentLoop: () => undefined,
 	};
 }
 

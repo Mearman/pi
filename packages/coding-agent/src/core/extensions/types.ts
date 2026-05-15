@@ -62,6 +62,53 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { BashOperations, BashProcessHandle } from "../tools/bash.ts";
 
 export type { BashProcessHandle };
+/**
+ * Handle to a running agent loop, exposed to extensions via `ctx.getAgentLoop()`.
+ *
+ * Available while an agent loop is active. Use `background()` to detach the
+ * loop from the TUI and redirect output to a file. The loop continues executing
+ * in the background. Use `foreground()` to reattach.
+ */
+export interface AgentLoopHandle {
+	/** Unique identifier for this loop run. */
+	readonly id: string;
+	/** Current state of the loop. */
+	readonly status: "running" | "backgrounded" | "completed" | "failed" | "killed";
+	/** Timestamp (ms since epoch) when the loop started. */
+	readonly startedAt: number;
+	/** Current turn index. */
+	readonly turnIndex: number;
+
+	/**
+	 * Detach the loop from the TUI. The agent continues executing but output
+	 * is written to a log file instead of the terminal.
+	 *
+	 * @param outputPath Optional file path for loop output. Defaults to
+	 *   `/tmp/pi-agent-{id}.log`.
+	 * @returns The output file path.
+	 * @throws If already backgrounded or the loop has completed.
+	 */
+	background(outputPath?: string): string;
+
+	/**
+	 * Reattach the loop to the TUI. Streaming output resumes in the terminal.
+	 *
+	 * @throws If not currently backgrounded.
+	 */
+	foreground(): void;
+
+	/**
+	 * Kill the loop and abort any running tool calls.
+	 */
+	kill(): void;
+
+	/**
+	 * Register a callback for when the loop finishes.
+	 * If already finished, the callback fires asynchronously.
+	 */
+	onComplete(callback: (status: "completed" | "failed" | "killed") => void): void;
+}
+
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
 	BashToolDetails,
@@ -378,6 +425,14 @@ export interface ExtensionContext {
 	 * ```
 	 */
 	getBashProcess(): BashProcessHandle | undefined;
+
+	/**
+	 * Get the currently running agent loop handle, if any.
+	 *
+	 * Returns an `AgentLoopHandle` while an agent loop is active. Use `background()`
+	 * to detach the loop from the TUI while it keeps running.
+	 */
+	getAgentLoop(): AgentLoopHandle | undefined;
 }
 
 /**

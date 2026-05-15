@@ -13,8 +13,9 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream as _createWriteStream, type WriteStream } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import type {
 	Agent,
 	AgentEvent,
@@ -24,6 +25,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
+import type { AgentLoopHandle } from "./extensions/types.js";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -245,6 +247,97 @@ interface ToolDefinitionEntry {
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
 // ============================================================================
+// AgentLoopHandle Implementation
+// ============================================================================
+
+const completedStatuses = new Set(["completed", "failed", "killed"]);
+
+class AgentLoopHandleImpl implements AgentLoopHandle {
+	private _status: "running" | "backgrounded" | "completed" | "failed" | "killed" = "running";
+	private readonly _completeCallbacks: Array<(status: "completed" | "failed" | "killed") => void> = [];
+	private readonly _turnIndexFn: () => number;
+
+	constructor(
+		private readonly _id: string,
+		private readonly _startedAt: number,
+		turnIndexFn: () => number,
+	) {
+		this._turnIndexFn = turnIndexFn;
+	}
+
+	get id(): string { return this._id; }
+	get status() { return this._status; }
+	get startedAt(): number { return this._startedAt; }
+	get turnIndex(): number { return this._turnIndexFn(); }
+
+	private _backgroundFn: ((outputPath: string) => void) | undefined;
+	private _foregroundFn: (() => void) | undefined;
+	private _killFn: (() => void) | undefined;
+
+	/** Wire up session-controlled callbacks. */
+	bind(
+		backgroundFn: (outputPath: string) => void,
+		foregroundFn: () => void,
+		killFn: () => void,
+	): void {
+		this._backgroundFn = backgroundFn;
+		this._foregroundFn = foregroundFn;
+		this._killFn = killFn;
+	}
+
+	background(outputPath?: string): string {
+		if (completedStatuses.has(this._status)) {
+			throw new Error(`Cannot background: loop has already ${this._status}`);
+		}
+		if (this._status === "backgrounded") {
+			throw new Error("Already backgrounded");
+		}
+
+		const path = outputPath ?? `${tmpdir()}/pi-agent-${this._id}.log`;
+		mkdirSync(dirname(path), { recursive: true });
+
+		this._backgroundFn?.(path);
+		this._status = "backgrounded";
+		return path;
+	}
+
+	foreground(): void {
+		if (this._status !== "backgrounded") {
+			throw new Error(`Cannot foreground: loop is ${this._status}, not backgrounded`);
+		}
+
+		this._foregroundFn?.();
+		this._status = "running";
+	}
+
+	kill(): void {
+		if (completedStatuses.has(this._status)) return;
+
+		this._killFn?.();
+		this._setTerminal("killed");
+	}
+
+	onComplete(callback: (status: "completed" | "failed" | "killed") => void): void {
+		if (completedStatuses.has(this._status)) {
+			setTimeout(() => callback(this._status as "completed" | "failed" | "killed"), 0);
+			return;
+		}
+		this._completeCallbacks.push(callback);
+	}
+
+	/** Called by AgentSession when the agent loop finishes. */
+	complete(finalStatus: "completed" | "failed"): void {
+		this._setTerminal(finalStatus);
+	}
+
+	private _setTerminal(status: "completed" | "failed" | "killed"): void {
+		this._status = status;
+		for (const cb of this._completeCallbacks) cb(status);
+		this._completeCallbacks.length = 0;
+	}
+}
+
+// ============================================================================
 // AgentSession Class
 // ============================================================================
 
@@ -284,6 +377,15 @@ export class AgentSession {
 
 	// Shared ref for extension access to the currently running bash process.
 	private _bashProcessRef: BashProcessRef = { current: undefined };
+
+	// Agent backgrounding state.
+	private _backgrounded = false;
+	private _backgroundOutputPath: string | undefined;
+	private _backgroundOutputStream: import("node:fs").WriteStream | undefined;
+
+	// Current agent loop handle, if any.
+	private _agentLoopHandle: AgentLoopHandleImpl | undefined;
+	private _agentLoopCounter = 0;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -451,6 +553,13 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
+		if (this._backgrounded && this._backgroundOutputStream) {
+			// Write event to background log file instead of notifying TUI listeners.
+			const timestamp = new Date().toISOString();
+			const line = `[${timestamp}] ${JSON.stringify(event)}\n`;
+			this._backgroundOutputStream.write(line);
+			return;
+		}
 		for (const l of this._eventListeners) {
 			l(event);
 		}
@@ -597,8 +706,34 @@ export class AgentSession {
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
+			// Create a new agent loop handle for this run.
+			const id = `run-${++this._agentLoopCounter}`;
+			const handle = new AgentLoopHandleImpl(id, Date.now(), () => this._turnIndex);
+			handle.bind(
+				(outputPath: string) => {
+					this._backgroundOutputPath = outputPath;
+					this._backgrounded = true;
+					this._backgroundOutputStream = _createWriteStream(outputPath, { flags: "a" });
+				},
+				() => {
+					this._backgrounded = false;
+					if (this._backgroundOutputStream) { this._backgroundOutputStream.end(); this._backgroundOutputStream = undefined; }
+				},
+				() => { this.agent.abort(); },
+			);
+			this._agentLoopHandle = handle;
+			this._extensionRunner.agentLoopHandle = handle;
 			await this._extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
+			// Complete the agent loop handle.
+			const lastMsg = event.messages[event.messages.length - 1];
+			const failed = lastMsg?.role === "assistant" && lastMsg.stopReason === "error";
+			this._agentLoopHandle?.complete(failed ? "failed" : "completed");
+			// Clean up background state.
+			if (this._backgroundOutputStream) { this._backgroundOutputStream.end(); this._backgroundOutputStream = undefined; }
+			this._backgrounded = false;
+			this._agentLoopHandle = undefined;
+			this._extensionRunner.agentLoopHandle = undefined;
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {

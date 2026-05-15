@@ -4,7 +4,7 @@
 
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
-export type { WidgetItem, SelectAction, LiveOutputOptions } from "./types.ts";
+export type { WidgetItem, SelectAction, LiveOutputOptions, AgentLoopHandle } from "./types.ts";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
