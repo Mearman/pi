@@ -5,6 +5,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
+import type { BashProcessHandle, BashProcessRef } from "../tools/bash.ts";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
@@ -238,6 +239,7 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private bashProcessRef: BashProcessRef = { current: undefined };
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -261,6 +263,15 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+	}
+
+	setBashProcessRef(ref: BashProcessRef): void {
+		this.bashProcessRef = ref;
+	}
+
+	/** Get the currently running bash process handle, if any. */
+	getBashProcess(): BashProcessHandle | undefined {
+		return this.bashProcessRef.current;
 	}
 
 	bindCore(
@@ -629,6 +640,10 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			getBashProcess: () => {
+				runner.assertActive();
+				return runner.bashProcessRef.current;
 			},
 		};
 	}

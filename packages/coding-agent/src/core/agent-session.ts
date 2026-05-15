@@ -87,7 +87,11 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
-import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
+import {
+	type BashOperations,
+	type BashProcessRef,
+	createLocalBashOperations,
+} from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
@@ -281,6 +285,9 @@ export class AgentSession {
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+
+	// Shared ref for extension access to the currently running bash process.
+	private _bashProcessRef: BashProcessRef = { current: undefined };
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -2357,7 +2364,7 @@ export class AgentSession {
 				)
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					bash: { commandPrefix: shellCommandPrefix, shellPath, processRef: this._bashProcessRef },
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -2381,6 +2388,7 @@ export class AgentSession {
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}
+		this._extensionRunner.setBashProcessRef(this._bashProcessRef);
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 

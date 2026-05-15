@@ -1,5 +1,8 @@
 export {
+	type BashExecResult,
 	type BashOperations,
+	type BashProcessHandle,
+	type BashProcessRef,
 	type BashSpawnContext,
 	type BashSpawnHook,
 	type BashToolDetails,

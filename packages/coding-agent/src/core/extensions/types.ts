@@ -59,7 +59,9 @@ import type {
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
-import type { BashOperations } from "../tools/bash.ts";
+import type { BashOperations, BashProcessHandle } from "../tools/bash.ts";
+
+export type { BashProcessHandle };
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
 	BashToolDetails,
@@ -324,6 +326,28 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Get the currently running bash process handle, if any.
+	 *
+	 * Returns a `BashProcessHandle` while a bash tool call is executing, or
+	 * `undefined` when no bash command is running. Use this to detach a
+	 * long-running process to the background from a keyboard shortcut or
+	 * event handler.
+	 *
+	 * @example
+	 * ```ts
+	 * // In a keyboard shortcut handler:
+	 * const handle = ctx.getBashProcess();
+	 * if (handle) {
+	 *   const outputPath = handle.background();
+	 *   ctx.ui.notify(`Backgrounded (PID ${handle.pid}). Output: ${outputPath}`);
+	 *   handle.onExit((code) => {
+	 *     ctx.ui.notify(`Background command exited with code ${code}`);
+	 *   });
+	 * }
+	 * ```
+	 */
+	getBashProcess(): BashProcessHandle | undefined;
 }
 
 /**

@@ -1657,6 +1657,7 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
+			getBashProcess: () => extensionRunner.getBashProcess(),
 		});
 
 		// Set up the extension shortcut handler on the default editor

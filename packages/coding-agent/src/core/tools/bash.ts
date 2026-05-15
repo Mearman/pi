@@ -1,4 +1,7 @@
 import { existsSync } from "node:fs";
+import { createWriteStream, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { tmpdir } from "node:os";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
@@ -30,6 +33,76 @@ export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
+	/** When the command was backgrounded via `BashProcessHandle.background()`. */
+	backgrounded?: boolean;
+	/** PID of the backgrounded process. */
+	backgroundPid?: number;
+	/** Path to the file receiving remaining output after backgrounding. */
+	backgroundOutputPath?: string;
+}
+
+// ============================================================================
+// Bash Process Handle
+// ============================================================================
+
+/**
+ * Handle to a running bash child process, exposed to extensions via
+ * `ctx.getBashProcess()`.
+ *
+ * Available while a bash tool call is executing. The extension can call
+ * `background()` to detach the process and return control to the agent loop,
+ * or `kill()` to terminate it. Use `onExit()` to receive a callback when the
+ * backgrounded process eventually exits.
+ */
+export interface BashProcessHandle {
+	/** Process ID, or undefined if spawn hasn't completed. */
+	readonly pid: number | undefined;
+	/** The command being executed. */
+	readonly command: string;
+	/** Working directory. */
+	readonly cwd: string;
+	/** Timestamp (ms since epoch) when the process was spawned. */
+	readonly startedAt: number;
+
+	/**
+	 * Detach the process to run in the background.
+	 *
+	 * Removes the tool's output listeners, pipes remaining stdout/stderr to a
+	 * file, and unrefs the child so the agent loop can continue.
+	 *
+	 * @param outputPath Optional file path for remaining output. Defaults to
+	 *   a temp file named `pi-bg-{pid}.log`.
+	 * @returns The output file path.
+	 * @throws If already backgrounded or the process has already exited.
+	 */
+	background(outputPath?: string): string;
+
+	/**
+	 * Kill the process tree. Works whether the process is backgrounded or not.
+	 */
+	kill(): void;
+
+	/**
+	 * Register a callback for when the process exits.
+	 * If the process has already exited, the callback fires asynchronously.
+	 */
+	onExit(callback: (exitCode: number | null) => void): void;
+}
+
+/** Mutable ref that holds the currently-running bash process handle. */
+export type BashProcessRef = { current: BashProcessHandle | undefined };
+
+// ============================================================================
+// Bash Operations
+// ============================================================================
+
+/** Result of `BashOperations.exec()`. */
+export interface BashExecResult {
+	exitCode: number | null;
+	/** True when `BashProcessHandle.background()` detached the process. */
+	backgrounded?: boolean;
+	/** File path receiving remaining output after backgrounding. */
+	backgroundOutputPath?: string;
 }
 
 /**
@@ -42,18 +115,20 @@ export interface BashOperations {
 	 * @param command The command to execute
 	 * @param cwd Working directory
 	 * @param options Execution options
-	 * @returns Promise resolving to exit code (null if killed)
+	 * @returns Promise resolving to exec result
 	 */
 	exec: (
 		command: string,
 		cwd: string,
 		options: {
+			/** Called immediately after the child process spawns. */
+			onSpawn?: (handle: BashProcessHandle) => void;
 			onData: (data: Buffer) => void;
 			signal?: AbortSignal;
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
 		},
-	) => Promise<{ exitCode: number | null }>;
+	) => Promise<BashExecResult>;
 }
 
 /**
@@ -64,7 +139,7 @@ export interface BashOperations {
  */
 export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
 	return {
-		exec: (command, cwd, { onData, signal, timeout, env }) => {
+		exec: (command, cwd, { onSpawn, onData, signal, timeout, env }) => {
 			return new Promise((resolve, reject) => {
 				const { shell, args } = getShellConfig(options?.shellPath);
 				if (!existsSync(cwd)) {
@@ -81,6 +156,32 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 				if (child.pid) trackDetachedChildPid(child.pid);
 				let timedOut = false;
 				let timeoutHandle: NodeJS.Timeout | undefined;
+				let resolved = false;
+				const exitCallbacks: Array<(exitCode: number | null) => void> = [];
+
+				const safeResolve = (result: BashExecResult) => {
+					if (resolved) return;
+					resolved = true;
+					resolve(result);
+				};
+
+				const safeReject = (err: unknown) => {
+					if (resolved) return;
+					resolved = true;
+					reject(err);
+				};
+
+				const cleanup = () => {
+					if (child.pid) untrackDetachedChildPid(child.pid);
+					if (timeoutHandle) clearTimeout(timeoutHandle);
+					if (signal) signal.removeEventListener("abort", onAbort);
+				};
+
+				// Handle abort signal by killing the entire process tree.
+				const onAbort = () => {
+					if (child.pid) killProcessTree(child.pid);
+				};
+
 				// Set timeout if provided.
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
@@ -88,39 +189,92 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 						if (child.pid) killProcessTree(child.pid);
 					}, timeout * 1000);
 				}
+
+				// Build the process handle. Called before data listeners are attached
+				// so the extension can intercept from the earliest moment.
+				const handle: BashProcessHandle = {
+					pid: child.pid,
+					command,
+					cwd,
+					startedAt: Date.now(),
+					background(outputPath?: string): string {
+						if (resolved) {
+							throw new Error("Cannot background: process already completed or backgrounded");
+						}
+
+						const finalPath =
+							outputPath ?? `${tmpdir()}/pi-bg-${child.pid ?? Date.now()}.log`;
+
+						// Ensure parent directory exists.
+						mkdirSync(dirname(finalPath), { recursive: true });
+
+						// Remove the tool's data listeners so output goes to file only.
+						child.stdout?.removeListener("data", onData);
+						child.stderr?.removeListener("data", onData);
+
+						// Pipe remaining output to the file.
+						const fileStream = createWriteStream(finalPath, { flags: "a" });
+						child.stdout?.pipe(fileStream);
+						child.stderr?.pipe(fileStream);
+
+						// Remove abort and timeout handlers so the agent loop
+						// no longer controls this process.
+						cleanup();
+
+						// Detach from the parent event loop.
+						child.unref();
+
+						// Resolve the exec promise so the bash tool returns.
+						safeResolve({
+							exitCode: null,
+							backgrounded: true,
+							backgroundOutputPath: finalPath,
+						});
+
+						return finalPath;
+					},
+					kill(): void {
+						if (child.pid) killProcessTree(child.pid);
+					},
+					onExit(callback: (exitCode: number | null) => void): void {
+						exitCallbacks.push(callback);
+					},
+				};
+
+				// Notify caller of the spawned process before data listeners are attached.
+				// This ensures the handle is available via ctx.getBashProcess() by the time
+				// the first data event fires.
+				onSpawn?.(handle);
+
 				// Stream stdout and stderr.
 				child.stdout?.on("data", onData);
 				child.stderr?.on("data", onData);
-				// Handle abort signal by killing the entire process tree.
-				const onAbort = () => {
-					if (child.pid) killProcessTree(child.pid);
-				};
+
 				if (signal) {
 					if (signal.aborted) onAbort();
 					else signal.addEventListener("abort", onAbort, { once: true });
 				}
+
 				// Handle shell spawn errors and wait for the process to terminate without hanging
 				// on inherited stdio handles held by detached descendants.
 				waitForChildProcess(child)
 					.then((code) => {
-						if (child.pid) untrackDetachedChildPid(child.pid);
-						if (timeoutHandle) clearTimeout(timeoutHandle);
-						if (signal) signal.removeEventListener("abort", onAbort);
-						if (signal?.aborted) {
-							reject(new Error("aborted"));
-							return;
-						}
+						cleanup();
+						// Notify exit callbacks regardless of how we got here.
+						for (const cb of exitCallbacks) cb(code);
 						if (timedOut) {
-							reject(new Error(`timeout:${timeout}`));
+							safeReject(new Error(`timeout:${timeout}`));
 							return;
 						}
-						resolve({ exitCode: code });
+						if (signal?.aborted) {
+							safeReject(new Error("aborted"));
+							return;
+						}
+						safeResolve({ exitCode: code });
 					})
 					.catch((err) => {
-						if (child.pid) untrackDetachedChildPid(child.pid);
-						if (timeoutHandle) clearTimeout(timeoutHandle);
-						if (signal) signal.removeEventListener("abort", onAbort);
-						reject(err);
+						cleanup();
+						safeReject(err);
 					});
 			});
 		},
@@ -149,6 +303,8 @@ export interface BashToolOptions {
 	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/** Ref to register the running bash process handle for extension access. */
+	processRef?: BashProcessRef;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -269,6 +425,7 @@ export function createBashToolDefinition(
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
+	const processRef = options?.processRef;
 	return {
 		name: "bash",
 		label: "bash",
@@ -366,15 +523,19 @@ export function createBashToolDefinition(
 			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
 
 			try {
-				let exitCode: number | null;
+				let result: BashExecResult;
+				let currentHandle: BashProcessHandle | undefined;
 				try {
-					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+					result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+						onSpawn: (handle) => {
+							currentHandle = handle;
+							if (processRef) processRef.current = handle;
+						},
 						onData: handleData,
 						signal,
 						timeout,
 						env: spawnContext.env,
 					});
-					exitCode = result.exitCode;
 				} catch (err) {
 					const snapshot = await finishOutput();
 					const { text } = formatOutput(snapshot, "");
@@ -386,12 +547,32 @@ export function createBashToolDefinition(
 						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
 					}
 					throw err;
+				} finally {
+					if (processRef) processRef.current = undefined;
+				}
+
+				// Handle backgrounded result — the process was detached mid-execution.
+				if (result.backgrounded) {
+					const snapshot = await finishOutput();
+					const existing = snapshot.content?.trim();
+					const bgPath = result.backgroundOutputPath!;
+					const pidSuffix = currentHandle?.pid ? ` (PID ${currentHandle.pid})` : "";
+					const bgMessage = `Command backgrounded${pidSuffix}. Output: ${bgPath}`;
+					const text = existing ? `${existing}\n\n${bgMessage}` : bgMessage;
+					return {
+						content: [{ type: "text", text }],
+						details: {
+							backgrounded: true,
+							backgroundPid: currentHandle?.pid,
+							backgroundOutputPath: bgPath,
+						},
+					};
 				}
 
 				const snapshot = await finishOutput();
 				const { text: outputText, details } = formatOutput(snapshot);
-				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+				if (result.exitCode !== 0 && result.exitCode !== null) {
+					throw new Error(appendStatus(outputText, `Command exited with code ${result.exitCode}`));
 				}
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {
