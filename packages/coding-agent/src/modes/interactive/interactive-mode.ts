@@ -69,6 +69,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	WidgetItem,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
@@ -1745,7 +1746,7 @@ export class InteractiveMode {
 	 */
 	private setExtensionWidget(
 		key: string,
-		content: string[] | ((tui: TUI, thm: Theme) => Component & { dispose?(): void }) | undefined,
+		content: WidgetItem[] | string[] | ((tui: TUI, thm: Theme) => Component & { dispose?(): void }) | undefined,
 		options?: ExtensionWidgetOptions,
 	): void {
 		const placement = options?.placement ?? "aboveEditor";
@@ -1763,12 +1764,21 @@ export class InteractiveMode {
 			return;
 		}
 
+		// Normalise WidgetItem[] to string[] for rendering.
+		// TODO: render WidgetItem.onSelect as clickable/navigable items.
+		const lines: string[] = [];
+		if (Array.isArray(content)) {
+			for (const item of content) {
+				lines.push(typeof item === "string" ? item : item.text);
+			}
+		}
+
 		let component: Component & { dispose?(): void };
 
-		if (Array.isArray(content)) {
+		if (lines.length > 0) {
 			// Wrap string array in a Container with Text components
 			const container = new Container();
-			for (const line of content.slice(0, InteractiveMode.MAX_WIDGET_LINES)) {
+			for (const line of lines.slice(0, InteractiveMode.MAX_WIDGET_LINES)) {
 				container.addChild(new Text(line, 1, 0));
 			}
 			if (content.length > InteractiveMode.MAX_WIDGET_LINES) {
@@ -1777,7 +1787,7 @@ export class InteractiveMode {
 			component = container;
 		} else {
 			// Factory function - create component
-			component = content(this.ui, theme);
+			component = (content as (tui: TUI, thm: Theme) => Component & { dispose?(): void })(this.ui, theme);
 		}
 
 		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
@@ -2016,6 +2026,18 @@ export class InteractiveMode {
 			},
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
+			liveOutput: async (options) => {
+				// TODO: implement live file tailing component
+				// For now, fall back to editor with current file contents
+				try {
+					const { readFile } = await import("node:fs/promises");
+					const content = await readFile(options.filePath, "utf-8");
+					const ui = this.session.extensionRunner.getUIContext();
+					if (ui) await ui.editor(options.title, content);
+				} catch {
+					// File may not exist yet
+				}
+			},
 		};
 	}
 

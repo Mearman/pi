@@ -152,7 +152,7 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], actions?: SelectAction[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+	select(title: string, options: string[], opts?: ExtensionUIDialogOptions & { actions?: SelectAction[] }): Promise<string | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;

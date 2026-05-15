@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
-import { createWriteStream, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
@@ -202,8 +201,7 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 							throw new Error("Cannot background: process already completed or backgrounded");
 						}
 
-						const finalPath =
-							outputPath ?? `${tmpdir()}/pi-bg-${child.pid ?? Date.now()}.log`;
+						const finalPath = outputPath ?? `${tmpdir()}/pi-bg-${child.pid ?? Date.now()}.log`;
 
 						// Ensure parent directory exists.
 						mkdirSync(dirname(finalPath), { recursive: true });

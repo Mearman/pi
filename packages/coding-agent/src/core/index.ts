@@ -77,3 +77,4 @@ export {
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
+export type { BashProcessRef } from "./tools/bash.ts";
