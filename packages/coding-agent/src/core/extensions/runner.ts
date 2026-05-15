@@ -201,6 +201,7 @@ const noOpUIContext: ExtensionUIContext = {
 	setWorkingIndicator: () => {},
 	setHiddenThinkingLabel: () => {},
 	setWidget: () => {},
+	liveOutput: async () => {},
 	setFooter: () => {},
 	setHeader: () => {},
 	setTitle: () => {},

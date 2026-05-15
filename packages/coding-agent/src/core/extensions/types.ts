@@ -121,6 +121,16 @@ export interface SelectAction {
 	onTrigger: () => void;
 }
 
+/** Options for live output streaming. */
+export interface LiveOutputOptions {
+	/** Widget/overlay title. */
+	readonly title: string;
+	/** File path to tail. */
+	readonly filePath: string;
+	/** Poll interval in milliseconds (default: 1000ms). */
+	pollInterval?: number;
+}
+
 /** Raw terminal input listener for extensions. */
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
@@ -180,6 +190,9 @@ export interface ExtensionUIContext {
 
 	/** Set a widget to display above or below the editor. Accepts string array, component factory, or widget items with callbacks. */
 	setWidget(key: string, content: WidgetItem[] | string[] | undefined, options?: ExtensionWidgetOptions): void;
+
+	/** Show live output from a file stream. */
+	liveOutput(options: LiveOutputOptions): Promise<void>;
 	setWidget(
 		key: string,
 		content: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined,
