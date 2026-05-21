@@ -199,7 +199,11 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], opts?: ExtensionUIDialogOptions & { actions?: SelectAction[] }): Promise<string | undefined>;
+	select(
+		title: string,
+		options: string[],
+		opts?: ExtensionUIDialogOptions & { actions?: SelectAction[] },
+	): Promise<string | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
@@ -237,14 +241,14 @@ export interface ExtensionUIContext {
 
 	/** Set a widget to display above or below the editor. Accepts string array, component factory, or widget items with callbacks. */
 	setWidget(key: string, content: WidgetItem[] | string[] | undefined, options?: ExtensionWidgetOptions): void;
-
-	/** Show live output from a file stream. */
-	liveOutput(options: LiveOutputOptions): Promise<void>;
 	setWidget(
 		key: string,
 		content: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined,
 		options?: ExtensionWidgetOptions,
 	): void;
+
+	/** Show live output from a file stream. */
+	liveOutput(options: LiveOutputOptions): Promise<void>;
 
 	/** Set a custom footer component, or undefined to restore the built-in footer.
 	 *

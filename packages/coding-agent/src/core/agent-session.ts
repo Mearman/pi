@@ -13,9 +13,9 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream as _createWriteStream, type WriteStream } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { createWriteStream as _createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { basename, dirname, resolve } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
@@ -25,7 +25,6 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
-import type { AgentLoopHandle } from "./extensions/types.js";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -79,6 +78,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { AgentLoopHandle } from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -256,30 +256,34 @@ class AgentLoopHandleImpl implements AgentLoopHandle {
 	private _status: "running" | "backgrounded" | "completed" | "failed" | "killed" = "running";
 	private readonly _completeCallbacks: Array<(status: "completed" | "failed" | "killed") => void> = [];
 	private readonly _turnIndexFn: () => number;
+	private readonly _id: string;
+	private readonly _startedAt: number;
 
-	constructor(
-		private readonly _id: string,
-		private readonly _startedAt: number,
-		turnIndexFn: () => number,
-	) {
+	constructor(id: string, startedAt: number, turnIndexFn: () => number) {
+		this._id = id;
+		this._startedAt = startedAt;
 		this._turnIndexFn = turnIndexFn;
 	}
 
-	get id(): string { return this._id; }
-	get status() { return this._status; }
-	get startedAt(): number { return this._startedAt; }
-	get turnIndex(): number { return this._turnIndexFn(); }
+	get id(): string {
+		return this._id;
+	}
+	get status() {
+		return this._status;
+	}
+	get startedAt(): number {
+		return this._startedAt;
+	}
+	get turnIndex(): number {
+		return this._turnIndexFn();
+	}
 
 	private _backgroundFn: ((outputPath: string) => void) | undefined;
 	private _foregroundFn: (() => void) | undefined;
 	private _killFn: (() => void) | undefined;
 
 	/** Wire up session-controlled callbacks. */
-	bind(
-		backgroundFn: (outputPath: string) => void,
-		foregroundFn: () => void,
-		killFn: () => void,
-	): void {
+	bind(backgroundFn: (outputPath: string) => void, foregroundFn: () => void, killFn: () => void): void {
 		this._backgroundFn = backgroundFn;
 		this._foregroundFn = foregroundFn;
 		this._killFn = killFn;
@@ -380,6 +384,7 @@ export class AgentSession {
 
 	// Agent backgrounding state.
 	private _backgrounded = false;
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: accessed via this._backgroundOutputPath in background()
 	private _backgroundOutputPath: string | undefined;
 	private _backgroundOutputStream: import("node:fs").WriteStream | undefined;
 
@@ -717,9 +722,14 @@ export class AgentSession {
 				},
 				() => {
 					this._backgrounded = false;
-					if (this._backgroundOutputStream) { this._backgroundOutputStream.end(); this._backgroundOutputStream = undefined; }
+					if (this._backgroundOutputStream) {
+						this._backgroundOutputStream.end();
+						this._backgroundOutputStream = undefined;
+					}
 				},
-				() => { this.agent.abort(); },
+				() => {
+					this.agent.abort();
+				},
 			);
 			this._agentLoopHandle = handle;
 			this._extensionRunner.agentLoopHandle = handle;
@@ -730,7 +740,10 @@ export class AgentSession {
 			const failed = lastMsg?.role === "assistant" && lastMsg.stopReason === "error";
 			this._agentLoopHandle?.complete(failed ? "failed" : "completed");
 			// Clean up background state.
-			if (this._backgroundOutputStream) { this._backgroundOutputStream.end(); this._backgroundOutputStream = undefined; }
+			if (this._backgroundOutputStream) {
+				this._backgroundOutputStream.end();
+				this._backgroundOutputStream = undefined;
+			}
 			this._backgrounded = false;
 			this._agentLoopHandle = undefined;
 			this._extensionRunner.agentLoopHandle = undefined;

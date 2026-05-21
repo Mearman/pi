@@ -5,13 +5,13 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
-import type { BashProcessHandle, BashProcessRef } from "../tools/bash.ts";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BashProcessHandle, BashProcessRef } from "../tools/bash.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -242,7 +242,7 @@ export class ExtensionRunner {
 	private getSystemPromptFn: () => string = () => "";
 	private bashProcessRef: BashProcessRef = { current: undefined };
 	/** Current agent loop handle (set by AgentSession on agent_start). */
-	public agentLoopHandle: import("../extensions/types.js").AgentLoopHandle | undefined;
+	public agentLoopHandle: import("../extensions/types.ts").AgentLoopHandle | undefined;
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
